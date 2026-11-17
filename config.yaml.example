@@ -1,0 +1,129 @@
+# ============================================================
+# km-data-sink-mcp V1.0.2 配置文件示例
+# 使用方式：复制为 config.yaml，按需修改
+# 密码一律通过环境变量注入（password_env），不写明文
+# ============================================================
+
+# ---------- 数据库连接 ----------
+connections:
+  # 连接名：default（工具里用 connection: "default" 引用）
+  default:
+    type: mysql                       # V1.0 支持：mysql / sqlite
+    host: 127.0.0.1
+    port: 3306
+    database: sink_data
+    username: mcp_writer
+    password_env: SINK_DB_PASSWORD    # 密码环境变量名，不写明文
+    pool_size: 5
+    query_timeout_s: 30
+
+  # 第二套连接：本地 SQLite（开发/测试用）
+  local:
+    type: sqlite
+    path: ./data/local.db             # SQLite 专用字段
+    pool_size: 1                      # SQLite 强制为 1（忽略配置，避免多写冲突）
+    sqlite:
+      busy_timeout_ms: 5000
+      wal_mode: true                  # 启用 WAL 模式（多进程并发靠 WAL + busy_timeout + 重试）
+
+# ---------- 内容限制 ----------
+content:
+  max_size_mb: 5                      # 单篇文档上限，默认 5MB，超限拒绝（不截断）
+
+# ---------- 重试与事务 ----------
+db:
+  max_retry: 3                        # 最大重试次数（仅可重试异常，不允许无限重试）
+  retry_backoff_ms: 200               # 重试退避（毫秒）
+  query_timeout_s: 30                 # 单条语句超时（秒）
+  pool_size: 5                        # 连接池大小（MySQL；SQLite 强制 1）
+
+# ---------- 分页 ----------
+query:
+  default_page_size: 20               # 默认每页条数
+  max_page_size: 100                  # 最大每页条数（page_size 上限）
+
+# ---------- 数据表（配置即 schema） ----------
+tables:
+  auto_create: true                   # 表不存在时自动建表
+
+  # 说明：
+  # 1) upsert_key 只能有一组，是唯一的 upsert 冲突判断主键，字段必须 nullable: false。
+  # 2) unique_keys 为辅助唯一索引（可选、可多组），仅作唯一约束，不参与 upsert 隐式更新；
+  #    发生辅助键冲突时返回 UNIQUE_KEY_CONFLICT（拒绝写入，不静默更新）。
+  # 3) document_id / created_at 为系统强制列，由引擎自动加入（system.uuid / system.now），
+  #    无需在 columns 中声明；若显式声明，source 必须分别为 system.uuid / system.now。
+  # 4) 列的非空约束用 nullable: false 表达。
+
+  allowlist:                          # 白名单：只允许写这几张表
+    # ===== 示例 1：历史模式（每次执行留痕，run_id 区分） =====
+    - name: ai_news
+      mode: history                   # 覆盖 overwrite / 历史 history
+      columns:
+        - column: task_name
+          type: VARCHAR(128)
+          source: task_name
+          nullable: false
+        - column: run_id
+          type: VARCHAR(128)
+          source: run_id
+          nullable: false
+        - column: business_date
+          type: DATE
+          source: business_date
+          nullable: true              # 历史模式 business_date 可选
+        - column: format
+          type: VARCHAR(8)
+          source: format
+          nullable: false
+        - column: content
+          type: LONG_TEXT
+          source: content
+          nullable: false
+        - column: article_id
+          type: VARCHAR(64)
+          source: meta.article_id
+          nullable: false             # 参与辅助唯一索引，必须 NOT NULL
+        - column: title
+          type: TEXT
+          source: meta.title
+          nullable: true
+        - column: pub_date
+          type: DATE
+          source: meta.pub_date
+          nullable: true
+      upsert_key:                     # 唯一的 upsert 主键（历史模式含 run_id）
+        - task_name
+        - run_id
+        - format
+      unique_keys:                    # 辅助唯一索引（可选，冲突即拒绝）
+        - [article_id]
+
+    # ===== 示例 2：覆盖模式（同任务+日期+格式 只保留最新） =====
+    - name: daily_report
+      mode: overwrite                 # 覆盖模式
+      columns:
+        - column: task_name
+          type: VARCHAR(128)
+          source: task_name
+          nullable: false
+        - column: business_date
+          type: DATE
+          source: business_date
+          nullable: false             # 覆盖模式 business_date 必填（参与 upsert_key）
+        - column: format
+          type: VARCHAR(8)
+          source: format
+          nullable: false
+        - column: content
+          type: LONG_TEXT
+          source: content
+          nullable: false
+        - column: summary
+          type: TEXT
+          source: meta.summary
+          nullable: true
+      upsert_key:                     # 覆盖模式：不含 run_id 的业务唯一键，重复执行更新原记录
+        - task_name
+        - business_date
+        - format
+      # 本表无辅助唯一索引，可省略 unique_keys

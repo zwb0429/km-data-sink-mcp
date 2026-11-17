@@ -1,0 +1,26 @@
+# Build
+target/
+*.class
+*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Logs
+logs/
+*.log
+
+# Screenshots
+.screenshots/
+
+# Local config (contains env var names only, but keep local copies out)
+config.yaml
+
+# OS
+.DS_Store
+Thumbs.db
