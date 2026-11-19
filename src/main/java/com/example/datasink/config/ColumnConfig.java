@@ -21,6 +21,8 @@ public class ColumnConfig {
     private String source;
     /** 默认 true */
     private boolean nullable = true;
+    /** 列注释（仅 MySQL 建表生效，可选） */
+    private String comment;
 
     public String getColumn() {
         return column;
@@ -52,6 +54,14 @@ public class ColumnConfig {
 
     public void setNullable(boolean nullable) {
         this.nullable = nullable;
+    }
+
+    public String getComment() {
+        return comment;
+    }
+
+    public void setComment(String comment) {
+        this.comment = comment;
     }
 
     /** 是否系统来源列（不由调用方提供） */

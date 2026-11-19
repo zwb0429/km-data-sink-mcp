@@ -55,19 +55,11 @@ public final class DataSinkServer {
 
         ConnectionManager manager = new ConnectionManager(config);
         SchemaManager schemaManager = new SchemaManager(manager);
-        ExecutionRecorder recorder = new ExecutionRecorder(manager);
+        ExecutionRecorder recorder = new ExecutionRecorder(manager,
+                config.getDb().getMaxRetry(), config.getDb().getRetryBackoffMs());
         UpsertWriter writer = new UpsertWriter(manager, recorder,
                 config.getDb().getMaxRetry(), config.getDb().getRetryBackoffMs());
         DocumentQueryService queryService = new DocumentQueryService(manager, config);
-
-        try {
-            schemaManager.init(); // 建执行记录表 + 执行记录表结构校验（每连接）
-        } catch (Exception e) {
-            log.error("连接初始化失败: {}", e.getMessage());
-            manager.close();
-            System.exit(1);
-            return;
-        }
 
         List<SyncToolSpecification> tools = new ArrayList<>();
         tools.add(new TestConnectionTool(manager).specification());
@@ -78,6 +70,8 @@ public final class DataSinkServer {
         tools.add(new ListDocumentsTool(manager, queryService, config).specification());
         tools.add(new GetExecutionTool(manager, recorder).specification());
 
+        // 先构建 MCP server：stdio 立即就绪，initialize 握手不被 DB 初始化阻塞。
+        // （MySQL 连接池冷启动可达 15s+，若先初始化 DB 再起 server，客户端会因握手超时报 Connection closed）
         var server = McpServer.sync(
                         new StdioServerTransportProvider(McpJsonDefaults.getMapper()))
                 .serverInfo("km-data-sink-mcp", "1.0.2")
@@ -89,6 +83,19 @@ public final class DataSinkServer {
             log.info("服务关闭：释放连接池资源");
             manager.close();
         }));
+
+        // server 就绪后再初始化连接池与执行记录表；失败不退出，保留 server 供 test_connection 排查
+        try {
+            schemaManager.init(); // 建执行记录表 + 执行记录表结构校验（每连接）
+        } catch (Exception e) {
+            log.error("连接初始化失败（server 保持运行，可通过 test_connection 排查）: {}", e.getMessage());
+            // 输出根因链（Access denied / Unknown database 等真实原因在 cause 中）
+            Throwable cur = e.getCause();
+            while (cur != null) {
+                log.error("  根因: {}", cur.getMessage());
+                cur = cur.getCause();
+            }
+        }
         // SDK 2.x：build() 后 transport 已开始处理 stdio 请求，主线程阻塞等待即可
         try {
             Thread.currentThread().join();

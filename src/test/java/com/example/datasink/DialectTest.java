@@ -85,6 +85,46 @@ class DialectTest {
         assertTrue(ddl.contains("CONSTRAINT `uk_upsert` UNIQUE (`task_name`, `business_date`, `format`)"), ddl);
         assertTrue(ddl.contains("CONSTRAINT `uk_aux_1` UNIQUE (`document_id`)"), ddl);
         assertTrue(ddl.contains("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"), ddl);
+        // 未声明注释时不应出现 COMMENT 关键字
+        assertFalse(ddl.contains("COMMENT"), "无注释配置不应生成 COMMENT: " + ddl);
+    }
+
+    // ---------- 表/列注释（仅 MySQL DDL 生效） ----------
+
+    @Test
+    void mysqlCreateTableSqlWithComments() {
+        TableConfig t = sampleTable();
+        t.setComment("日报落库（覆盖模式，同键更新最新记录）");
+        // 给前两列补注释（复用已有列对象）
+        t.getColumns().get(0).setComment("任务名称");
+        t.getColumns().get(1).setComment("业务日期");
+        String ddl = new MySqlDialect().buildCreateTableSql(t);
+        assertTrue(ddl.contains("`task_name` VARCHAR(128) NOT NULL COMMENT '任务名称'"), ddl);
+        assertTrue(ddl.contains("`business_date` DATE NOT NULL COMMENT '业务日期'"), ddl);
+        // 未设置注释的列不拼接 COMMENT
+        assertTrue(ddl.contains("`content` LONGTEXT NOT NULL,\n"), ddl);
+        assertTrue(ddl.endsWith("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='日报落库（覆盖模式，同键更新最新记录）'"), ddl);
+    }
+
+    @Test
+    void mysqlCreateTableSqlCommentEscaping() {
+        TableConfig t = sampleTable();
+        // 单引号需翻倍，换行需压平，避免破坏 DDL
+        t.getColumns().get(0).setComment("任务'名称'\n第二行");
+        t.setComment("表'注释'");
+        String ddl = new MySqlDialect().buildCreateTableSql(t);
+        assertTrue(ddl.contains("COMMENT '任务''名称'' 第二行'"), ddl);
+        assertTrue(ddl.contains("COMMENT='表''注释'"), ddl);
+    }
+
+    @Test
+    void systemColumnsHaveDefaultComments() {
+        TableConfig t = sampleTable();
+        t.ensureSystemColumns();
+        assertEquals("文档唯一ID（服务端生成 UUID）",
+                t.findColumn("document_id").getComment());
+        assertEquals("记录创建时间（服务端生成）",
+                t.findColumn("created_at").getComment());
     }
 
     @Test
@@ -109,10 +149,14 @@ class DialectTest {
     @Test
     void sqliteCreateTableSql() {
         TableConfig t = sampleTable();
+        t.setComment("日报表注释");
+        t.getColumns().get(0).setComment("任务名称注释");
         String ddl = new SqliteDialect().buildCreateTableSql(t);
         assertTrue(ddl.startsWith("CREATE TABLE IF NOT EXISTS \"daily_report\""), ddl);
         assertTrue(ddl.contains("\"content\" TEXT NOT NULL"), "LONG_TEXT → TEXT: " + ddl);
         assertTrue(ddl.contains("CONSTRAINT \"uk_upsert\" UNIQUE (\"task_name\", \"business_date\", \"format\")"), ddl);
+        // SQLite 无注释语法，配置的 comment 不参与 DDL
+        assertFalse(ddl.contains("COMMENT"), "SQLite DDL 不应包含 COMMENT: " + ddl);
     }
 
     // ---------- MySQL 唯一冲突解析（方案 8.4 / 9.3：区分 uk_upsert 与 uk_aux_N） ----------

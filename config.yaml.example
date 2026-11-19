@@ -9,11 +9,11 @@ connections:
   # 连接名：default（工具里用 connection: "default" 引用）
   default:
     type: mysql                       # V1.0 支持：mysql / sqlite
-    host: 127.0.0.1
+    host: 127.0.0.1                   # 你的 MySQL 地址
     port: 3306
-    database: sink_data
-    username: mcp_writer
-    password_env: SINK_DB_PASSWORD    # 密码环境变量名，不写明文
+    database: your_db                 # 你的库名
+    username: your_user               # 你的账号
+    password_env: SINK_DB_PASSWORD    # 密码环境变量名（程序读取该变量的值作为密码），不写明文
     pool_size: 5
     query_timeout_s: 30
 
@@ -53,44 +53,55 @@ tables:
   # 3) document_id / created_at 为系统强制列，由引擎自动加入（system.uuid / system.now），
   #    无需在 columns 中声明；若显式声明，source 必须分别为 system.uuid / system.now。
   # 4) 列的非空约束用 nullable: false 表达。
+  # 5) comment（可选）：表注释 / 列注释，自动建表时写入 DDL；仅 MySQL 生效，SQLite 忽略。
+  #    未声明 comment 的系统列会使用引擎默认注释。
 
   allowlist:                          # 白名单：只允许写这几张表
     # ===== 示例 1：历史模式（每次执行留痕，run_id 区分） =====
     - name: ai_news
       mode: history                   # 覆盖 overwrite / 历史 history
+      comment: AI 新闻落库（历史模式，每次执行一条）
       columns:
         - column: task_name
           type: VARCHAR(128)
           source: task_name
           nullable: false
+          comment: 任务名称
         - column: run_id
           type: VARCHAR(128)
           source: run_id
           nullable: false
+          comment: 执行运行 ID
         - column: business_date
           type: DATE
           source: business_date
           nullable: true              # 历史模式 business_date 可选
+          comment: 业务日期
         - column: format
           type: VARCHAR(8)
           source: format
           nullable: false
+          comment: 内容格式（md/html）
         - column: content
           type: LONG_TEXT
           source: content
           nullable: false
+          comment: 文档正文
         - column: article_id
           type: VARCHAR(64)
           source: meta.article_id
           nullable: false             # 参与辅助唯一索引，必须 NOT NULL
+          comment: 原文文章 ID（来自 meta）
         - column: title
           type: TEXT
           source: meta.title
           nullable: true
+          comment: 文章标题（来自 meta）
         - column: pub_date
           type: DATE
           source: meta.pub_date
           nullable: true
+          comment: 发布日期（来自 meta）
       upsert_key:                     # 唯一的 upsert 主键（历史模式含 run_id）
         - task_name
         - run_id
@@ -101,27 +112,33 @@ tables:
     # ===== 示例 2：覆盖模式（同任务+日期+格式 只保留最新） =====
     - name: daily_report
       mode: overwrite                 # 覆盖模式
+      comment: 日报落库（覆盖模式，同键更新最新记录）
       columns:
         - column: task_name
           type: VARCHAR(128)
           source: task_name
           nullable: false
+          comment: 任务名称
         - column: business_date
           type: DATE
           source: business_date
           nullable: false             # 覆盖模式 business_date 必填（参与 upsert_key）
+          comment: 业务日期
         - column: format
           type: VARCHAR(8)
           source: format
           nullable: false
+          comment: 内容格式（md/html）
         - column: content
           type: LONG_TEXT
           source: content
           nullable: false
+          comment: 文档正文
         - column: summary
           type: TEXT
           source: meta.summary
           nullable: true
+          comment: 内容摘要（来自 meta）
       upsert_key:                     # 覆盖模式：不含 run_id 的业务唯一键，重复执行更新原记录
         - task_name
         - business_date

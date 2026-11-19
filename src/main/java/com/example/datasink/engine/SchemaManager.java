@@ -154,26 +154,51 @@ public class SchemaManager {
     /**
      * 业务表首次写入时自动建表（auto_create=true）。
      * 表已存在 → 不 ALTER，返回 false（转结构校验流程）。
+     * 建表成功后为排序列创建普通索引（list_documents 优化），失败仅告警不影响写入。
      */
     public boolean ensureBusinessTable(String connectionName, com.example.datasink.config.TableConfig table) {
         Dialect dialect = manager.dialect(connectionName);
         synchronized (createTableLock) {
             try (Connection conn = manager.getConnection(connectionName)) {
+                boolean created;
                 try (var st = conn.createStatement()) {
                     st.execute(dialect.buildCreateTableSql(table));
-                    return true;
+                    created = true;
                 } catch (SQLException e) {
                     if (isTableAlreadyExists(e, dialect)) {
                         return false;
                     }
                     throw e;
                 }
+                // 排序列普通索引（SQLite IF NOT EXISTS 幂等；MySQL 捕获"已存在"忽略）
+                try (var st = conn.createStatement()) {
+                    st.execute(dialect.buildListIndexSql(table));
+                } catch (SQLException e) {
+                    if (!isIndexAlreadyExists(e, dialect)) {
+                        log.warn("排序列索引创建失败（连接 {}，表 {}）: {}",
+                                connectionName, table.getName(), e.getMessage());
+                    }
+                }
+                return created;
             } catch (SQLException e) {
                 log.error("自动建表失败（连接 {}，表 {}）: {}", connectionName, table.getName(), e.getMessage());
                 throw new DataSinkException(ErrorCode.DATABASE_TRANSACTION_ERROR,
                         "自动建表失败: 表 " + table.getName(), e);
             }
         }
+    }
+
+    /** 判断索引已存在异常（MySQL 1061 重复索引名；SQLite IF NOT EXISTS 一般不会报） */
+    private boolean isIndexAlreadyExists(SQLException e, Dialect dialect) {
+        SQLException cur = e;
+        while (cur != null) {
+            String msg = cur.getMessage() == null ? "" : cur.getMessage().toLowerCase();
+            if (cur.getErrorCode() == 1061 || msg.contains("already exists") || msg.contains("duplicate key name")) {
+                return true;
+            }
+            cur = cur.getNextException();
+        }
+        return false;
     }
 
     /**

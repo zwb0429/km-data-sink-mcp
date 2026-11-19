@@ -13,6 +13,8 @@ public class TableConfig {
 
     private String name;
     private String mode = MODE_OVERWRITE;
+    /** 表注释（仅 MySQL 建表生效，可选） */
+    private String comment;
     private List<ColumnConfig> columns = new ArrayList<>();
     /** 唯一的 upsert 主键（单组） */
     private List<String> upsertKey = new ArrayList<>();
@@ -25,6 +27,14 @@ public class TableConfig {
 
     public void setName(String name) {
         this.name = name;
+    }
+
+    public String getComment() {
+        return comment;
+    }
+
+    public void setComment(String comment) {
+        this.comment = comment;
     }
 
     public String getMode() {
@@ -86,6 +96,7 @@ public class TableConfig {
             c.setType("VARCHAR(36)");
             c.setSource(ColumnConfig.SOURCE_SYSTEM_UUID);
             c.setNullable(false);
+            c.setComment("文档唯一ID（服务端生成 UUID）");
             columns.add(c);
         }
         if (findColumn("created_at") == null) {
@@ -94,6 +105,7 @@ public class TableConfig {
             c.setType("TIMESTAMP");
             c.setSource(ColumnConfig.SOURCE_SYSTEM_NOW);
             c.setNullable(false);
+            c.setComment("记录创建时间（服务端生成）");
             columns.add(c);
         }
     }

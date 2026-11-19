@@ -1,7 +1,20 @@
-# Build
+# 本地配置（含真实数据库地址与密码，勿提交；使用 config.yaml.example 作模板）
+config.yaml
+
+# 构建产物
 target/
 *.class
 *.jar
+
+# 运行时数据与日志
+data/
+logs/
+*.log
+
+# E2E / 压测临时文件
+target/e2e-*.yaml
+target/e2e-test.db
+target/stress-*.yaml
 
 # IDE
 .idea/
@@ -11,15 +24,14 @@ target/
 .classpath
 .project
 
-# Logs
-logs/
-*.log
-
-# Screenshots
+# AI 工具本地数据
+.trae/
+.workbuddy/
 .screenshots/
 
-# Local config (contains env var names only, but keep local copies out)
-config.yaml
+# 部署密钥文件（.env 注入密码用）
+.env
+docker/.env
 
 # OS
 .DS_Store

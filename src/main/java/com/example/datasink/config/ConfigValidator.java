@@ -85,8 +85,13 @@ public final class ConfigValidator {
             if (isBlank(conn.getUsername())) {
                 throw new ValidationException("配置错误：MySQL 连接 " + name + " 缺少 username");
             }
-            if (isBlank(conn.getPasswordEnv()) && isBlank(conn.getPassword())) {
-                throw new ValidationException("配置错误：MySQL 连接 " + name + " 缺少 password_env 或 password");
+            if (conn.isPasswordEnvMissing()) {
+                throw new ValidationException("配置错误：MySQL 连接 " + name
+                        + " 的 password_env 环境变量未设置: " + conn.getPasswordEnv()
+                        + "（请设置系统环境变量，或在配置中改用 password 字段写明文）");
+            }
+            if (isBlank(conn.resolvePassword())) {
+                throw new ValidationException("配置错误：MySQL 连接 " + name + " 缺少密码（password_env 未设置且 password 为空）");
             }
         } else {
             if (isBlank(conn.getPath())) {

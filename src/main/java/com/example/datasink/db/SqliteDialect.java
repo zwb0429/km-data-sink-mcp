@@ -75,6 +75,13 @@ public class SqliteDialect implements Dialect {
         return sb.toString();
     }
 
+    /** 列表查询排序列普通索引（加速 list_documents ORDER BY created_at） */
+    @Override
+    public String buildListIndexSql(TableConfig table) {
+        return "CREATE INDEX IF NOT EXISTS " + quote("idx_order_by_" + table.getName())
+                + " ON " + quote(table.getName()) + " (" + quote("created_at") + ")";
+    }
+
     @Override
     public String formatNow() {
         return java.time.LocalDateTime.now()

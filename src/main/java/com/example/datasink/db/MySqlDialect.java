@@ -40,6 +40,9 @@ public class MySqlDialect implements Dialect {
             if (!col.isNullable()) {
                 sb.append(" NOT NULL");
             }
+            if (hasText(col.getComment())) {
+                sb.append(" COMMENT '").append(sqlEscape(col.getComment())).append("'");
+            }
             sb.append(",\n");
         }
         // upsert_key 唯一约束
@@ -54,7 +57,26 @@ public class MySqlDialect implements Dialect {
             }
         }
         sb.append("\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        if (hasText(table.getComment())) {
+            sb.append(" COMMENT='").append(sqlEscape(table.getComment())).append("'");
+        }
         return sb.toString();
+    }
+
+    /** 列表查询排序列普通索引（加速 list_documents ORDER BY created_at） */
+    @Override
+    public String buildListIndexSql(TableConfig table) {
+        return "CREATE INDEX " + quote("idx_order_by_" + table.getName())
+                + " ON " + quote(table.getName()) + " (" + quote("created_at") + ")";
+    }
+
+    private static boolean hasText(String s) {
+        return s != null && !s.isBlank();
+    }
+
+    /** 注释转义：单引号翻倍，换行/回车替换为空格（注释内不允许破坏 DDL 结构） */
+    private static String sqlEscape(String s) {
+        return s.replace("'", "''").replace("\r", " ").replace("\n", " ");
     }
 
     @Override

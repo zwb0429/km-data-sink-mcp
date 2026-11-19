@@ -28,9 +28,17 @@ public class ExecutionRecorder {
     public static final String STATUS_FAILED = "FAILED";
 
     private final ConnectionManager manager;
+    private final int maxRetry;
+    private final long retryBackoffMs;
 
     public ExecutionRecorder(ConnectionManager manager) {
+        this(manager, 3, 200);
+    }
+
+    public ExecutionRecorder(ConnectionManager manager, int maxRetry, long retryBackoffMs) {
         this.manager = manager;
+        this.maxRetry = Math.max(1, maxRetry);
+        this.retryBackoffMs = Math.max(0, retryBackoffMs);
     }
 
     /** 执行记录 */
@@ -43,9 +51,29 @@ public class ExecutionRecorder {
      * start_execution（T1 独立事务）：INSERT RUNNING。
      * 已存在 RUNNING → EXECUTION_ALREADY_RUNNING；已存在 SUCCESS → EXECUTION_ALREADY_SUCCESS；
      * 已存在 FAILED → 复用原记录，重置为 RUNNING。
+     * SQLITE_BUSY 等可重试异常按 max_retry 有限重试（方案 5.6-6），退避递增。
      */
     public Execution startExecution(String connection, String taskName, String runId, String startedAt) {
         Dialect dialect = manager.dialect(connection);
+        SQLException last = null;
+        for (int attempt = 1; attempt <= maxRetry; attempt++) {
+            try {
+                return startExecutionOnce(connection, taskName, runId, startedAt, dialect);
+            } catch (SQLException e) {
+                last = e;
+                // 业务异常（ALREADY_RUNNING 等）不在 SQLException 链上，直接到达此处说明是数据库异常
+                if (!dialect.isRetryable(e) || attempt >= maxRetry) {
+                    break;
+                }
+                log.warn("start_execution 可重试异常（第 {}/{} 次）: {}", attempt, maxRetry, e.getMessage());
+                sleepQuietly(retryBackoffMs * attempt);
+            }
+        }
+        throw translate(last, connection, "start_execution 失败");
+    }
+
+    private Execution startExecutionOnce(String connection, String taskName, String runId,
+                                         String startedAt, Dialect dialect) throws SQLException {
         try (Connection conn = manager.getConnection(connection)) {
             conn.setAutoCommit(false);
             try {
@@ -74,13 +102,12 @@ public class ExecutionRecorder {
                 rollbackQuietly(conn);
                 throw e;
             } catch (SQLException e) {
+                // 原样上抛（含 SQLITE_BUSY），由 startExecution 重试循环统一处理
                 conn.rollback();
-                throw translate(e, connection, "start_execution 失败");
+                throw e;
             } finally {
                 restoreAutoCommit(conn);
             }
-        } catch (SQLException e) {
-            throw translate(e, connection, "start_execution 失败");
         }
     }
 
@@ -243,6 +270,14 @@ public class ExecutionRecorder {
             conn.rollback();
         } catch (SQLException ignore) {
             // 忽略
+        }
+    }
+
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
     }
 

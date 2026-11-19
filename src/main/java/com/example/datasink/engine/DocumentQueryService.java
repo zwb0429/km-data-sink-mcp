@@ -156,42 +156,51 @@ public class DocumentQueryService {
                 params.add(args.get("business_date_to"));
             }
         }
+        String whereSql = where.toString();
 
-        // 列表列：除 content 外全部列 + content 摘要（前 200 字符）
-        List<String> listCols = table.getColumns().stream()
-                .map(ColumnConfig::getColumn)
-                .filter(c -> !"content".equalsIgnoreCase(c))
-                .collect(Collectors.toList());
+        try (Connection conn = manager.getConnection(connection)) {
+            // ---- 段1：轻量键列表（只读排序键 + upsert_key 列，不触碰 content 大字段） ----
+            // 排序键 + upsert_key 组成回表定位所需的最小列集
+            java.util.LinkedHashSet<String> keyCols = new java.util.LinkedHashSet<>(table.getUpsertKey());
+            keyCols.add(orderBy);
+            // upsert_key 引用的列必须存在（配置校验已保证），此处仅取白名单内列
+            String keyList = String.join(", ", keyCols);
 
-        String sql = "SELECT " + String.join(", ", listCols)
-                + ", SUBSTR(content, 1, 200) AS content_summary, LENGTH(content) AS content_length"
-                + " FROM " + table.getName() + where
-                + " ORDER BY " + orderBy + " " + orderDir
-                + " LIMIT ? OFFSET ?";
-        try (Connection conn = manager.getConnection(connection);
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            int idx = 1;
-            for (Object p : params) {
-                ps.setObject(idx++, p);
-            }
-            ps.setInt(idx++, pageSize);
-            ps.setInt(idx, (page - 1) * pageSize);
-            try (ResultSet rs = ps.executeQuery()) {
-                List<Map<String, Object>> items = new ArrayList<>();
-                while (rs.next()) {
-                    Map<String, Object> item = new LinkedHashMap<>();
-                    for (String c : listCols) {
-                        item.put(c, rs.getObject(c));
-                    }
-                    String summary = rs.getString("content_summary");
-                    item.put("content_summary", summary);
-                    item.put("content_length", rs.getLong("content_length"));
-                    items.add(item);
+            List<Map<String, Object>> keyRows = new ArrayList<>();
+            String keysSql = "SELECT " + keyList + " FROM " + table.getName() + whereSql
+                    + " ORDER BY " + orderBy + " " + orderDir
+                    + " LIMIT ? OFFSET ?";
+            try (PreparedStatement ps = conn.prepareStatement(keysSql)) {
+                int idx = 1;
+                for (Object p : params) {
+                    ps.setObject(idx++, p);
                 }
+                ps.setInt(idx++, pageSize);
+                ps.setInt(idx, (page - 1) * pageSize);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Map<String, Object> kr = new LinkedHashMap<>();
+                        for (String c : keyCols) {
+                            kr.put(c, rs.getObject(c));
+                        }
+                        keyRows.add(kr);
+                    }
+                }
+            }
 
-                // 总数（同条件）
-                String countSql = "SELECT COUNT(*) FROM " + table.getName() + where;
-                long total;
+            // ---- 段2：按 upsert_key 逐行回表取元数据 + 摘要（仅本页 pageSize 行触碰 content） ----
+            List<Map<String, Object>> items = new ArrayList<>(keyRows.size());
+            for (Map<String, Object> kr : keyRows) {
+                items.add(fetchRowSummary(conn, table, kr));
+            }
+
+            // ---- COUNT：仅当本页可能不是最后一页时才计算总数 ----
+            // 本页不满 pageSize → 必然是最后一页，total 可直接推导，跳过 COUNT
+            long total;
+            if (keyRows.size() < pageSize) {
+                total = (long) (page - 1) * pageSize + keyRows.size();
+            } else {
+                String countSql = "SELECT COUNT(*) FROM " + table.getName() + whereSql;
                 try (PreparedStatement cps = conn.prepareStatement(countSql)) {
                     int cidx = 1;
                     for (Object p : params) {
@@ -201,16 +210,51 @@ public class DocumentQueryService {
                         total = crs.next() ? crs.getLong(1) : 0;
                     }
                 }
-                Map<String, Object> data = new LinkedHashMap<>();
-                data.put("items", items);
-                data.put("page", page);
-                data.put("page_size", pageSize);
-                data.put("total", total);
-                data.put("total_pages", (total + pageSize - 1) / pageSize);
-                return data;
             }
+
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("items", items);
+            data.put("page", page);
+            data.put("page_size", pageSize);
+            data.put("total", total);
+            data.put("total_pages", (total + pageSize - 1) / pageSize);
+            return data;
         } catch (SQLException e) {
             throw translate(e, connection);
+        }
+    }
+
+    /**
+     * 按 upsert_key 回表取单行元数据 + content 摘要（不经 content 全文，SUBSTR 限制读取量）。
+     */
+    private Map<String, Object> fetchRowSummary(Connection conn, TableConfig table,
+                                                Map<String, Object> keyRow) throws SQLException {
+        List<String> listCols = table.getColumns().stream()
+                .map(ColumnConfig::getColumn)
+                .filter(c -> !"content".equalsIgnoreCase(c))
+                .collect(Collectors.toList());
+        List<String> uk = table.getUpsertKey();
+        String whereUk = uk.stream().map(c -> c + " = ?").collect(Collectors.joining(" AND "));
+        String sql = "SELECT " + String.join(", ", listCols)
+                + ", SUBSTR(content, 1, 200) AS content_summary, LENGTH(content) AS content_length"
+                + " FROM " + table.getName() + " WHERE " + whereUk;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            int idx = 1;
+            for (String c : uk) {
+                ps.setObject(idx++, keyRow.get(c));
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                if (!rs.next()) {
+                    return item; // 竞态删除：返回空对象（正常流程不会发生）
+                }
+                for (String c : listCols) {
+                    item.put(c, rs.getObject(c));
+                }
+                item.put("content_summary", rs.getString("content_summary"));
+                item.put("content_length", rs.getLong("content_length"));
+                return item;
+            }
         }
     }
 

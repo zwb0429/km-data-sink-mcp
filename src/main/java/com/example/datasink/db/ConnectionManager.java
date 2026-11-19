@@ -132,8 +132,11 @@ public class ConnectionManager {
         }
         hc.setMinimumIdle(Math.max(1, poolSize));
         hc.setPoolName("km-sink-" + c.getName());
-        hc.setConnectionTimeout(10_000);
-        hc.setInitializationFailTimeout(-1); // 惰性：不在建池时强校验连通性
+        // 远程 MySQL 握手可能较慢（VM/跨网段实测可达 15s+），取 30s 留足余量
+        hc.setConnectionTimeout(30_000);
+        // 启动即验证连通性（>0 语义：等待指定毫秒获取首个连接，失败抛出真实原因，
+        // 避免"惰性建池 + 空密码重试 10 秒后超时"掩盖 Access denied 等真实错误）
+        hc.setInitializationFailTimeout(35_000);
         hc.setAutoCommit(true);
 
         HikariDataSource created = new HikariDataSource(hc);

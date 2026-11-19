@@ -25,6 +25,12 @@ public interface Dialect {
     /** 建表 SQL（含唯一索引、document_id 唯一索引） */
     String buildCreateTableSql(TableConfig table);
 
+    /**
+     * 列表查询排序列（created_at）普通索引 DDL。
+     * 建表后单独执行；索引已存在时由调用方捕获"已存在"类异常忽略。
+     */
+    String buildListIndexSql(TableConfig table);
+
     /** 时间字段 system.now 落库值格式 */
     String formatNow();
 

@@ -149,12 +149,20 @@ public class ConnectionConfig {
         }
     }
 
-    /** 解析后的实际密码：password_env 优先，其次明文 password */
+    /** 解析后的实际密码：password_env 优先（变量存在时），不存在则回退明文 password */
     public String resolvePassword() {
         if (passwordEnv != null && !passwordEnv.isBlank()) {
             String v = System.getenv(passwordEnv);
-            return v == null ? "" : v;
+            if (v != null && !v.isEmpty()) {
+                return v;
+            }
         }
         return password == null ? "" : password;
+    }
+
+    /** password_env 指定的环境变量是否已设置 */
+    public boolean isPasswordEnvMissing() {
+        return passwordEnv != null && !passwordEnv.isBlank()
+                && System.getenv(passwordEnv) == null && (password == null || password.isBlank());
     }
 }
