@@ -6,7 +6,54 @@
 - **数据库**：SQLite + MySQL（V1.0 正式支持；PostgreSQL / SQL Server 为 P2 扩展位）
 - **不引入** Spring Boot / MyBatis / JPA
 
-## 使用流程总览
+## 项目介绍
+
+### 这是什么
+
+把「AI 生成的文档」变成「数据库里的结构化记录」。AI 客户端（如 WorkBuddy 定时任务）产出日报、周报、采集结果等 `.html` / `.md` 文档后，通过本服务提供的 MCP 工具把**文档全文 + 元数据**一并写入你指定的数据库表——支持自动建表、幂等去重、失败重试与全程执行留痕。
+
+解决的问题：
+
+| 没有它 | 有了它 |
+|---|---|
+| AI 把文档发到聊天窗口，第二天就找不到了 | 文档全文落库，随时按任务/日期查询回溯 |
+| 定时任务是否真的成功只能靠猜 | `mcp_task_execution` 表记录每次执行 RUNNING/SUCCESS/FAILED |
+| 同一任务重复执行产生重复数据 | `upsert_key` 幂等写入，覆盖模式同键更新、历史模式逐次留痕 |
+| 每接一个任务就要写一套入库代码 | 改一行 YAML 配置即可新增落库任务，零代码 |
+
+### 整体架构
+
+```mermaid
+flowchart LR
+    subgraph client["AI 客户端（MCP Host）"]
+        WB["WorkBuddy /<br/>Claude Desktop /<br/>Cursor / VS Code"]
+    end
+    subgraph server["km-data-sink-mcp（本服务 · Java 17）"]
+        T["7 个 MCP 工具<br/>save_document 等"]
+        subgraph engine["落库引擎"]
+            V["ValueResolver<br/>字段映射"]
+            S["SchemaManager<br/>自动建表"]
+            U["UpsertWriter<br/>幂等写入"]
+            R["ExecutionRecorder<br/>执行留痕"]
+        end
+        C["ConnectionManager<br/>HikariCP 连接池"]
+    end
+    subgraph db["数据库"]
+        MY[("MySQL 8.x")]
+        SQ[("SQLite 3.x")]
+    end
+
+    WB -- "stdio<br/>JSON-RPC" --> T
+    T --> V --> U
+    T --> R
+    U --> C
+    R --> C
+    S --> C
+    C --> MY
+    C --> SQ
+```
+
+### 落库流程
 
 ```mermaid
 sequenceDiagram
@@ -28,6 +75,25 @@ sequenceDiagram
 ```
 
 一次完整的落库 = **MCP 握手 → start_execution 留痕 → save_document 写入（文档与执行状态同一事务）→ 查询核对**。`save_document` 是核心工具；其余工具用于连接确认、查询与排障。
+
+### 项目结构
+
+```
+km-data-sink-mcp/
+├── src/main/java/com/example/datasink/
+│   ├── DataSinkServer.java        # 入口：组装工具 + stdio 传输 + 连接池初始化
+│   ├── config/                    # YAML 配置加载与校验（AppConfig/ConfigLoader/...）
+│   ├── db/                        # 数据库层：ConnectionManager / Dialect 方言 / TypeMapper
+│   ├── engine/                    # 核心引擎：建表、幂等写入、执行记录、字段映射、查询
+│   └── tools/                     # 7 个 MCP 工具定义与处理器
+├── src/test/java/                 # SQLite 集成 26 例 + 方言单元 16 例 + MySQL 集成
+├── scripts/                       # e2e 端到端与压测脚本（Python）
+├── docker/                        # Dockerfile + docker-compose + 容器配置
+├── config.yaml.example            # 配置模板（复制为 config.yaml 使用）
+└── pom.xml                        # Maven 构建（shade fat jar）
+```
+
+详细设计（事务边界、并发控制、API 参考）见技术文档 [docs/TECHNICAL.md](docs/TECHNICAL.md)。
 
 ## 用户上手四步
 
@@ -203,6 +269,39 @@ python scripts/stress_test.py           # 压测：A=SQLite 单进程 B=多进�
 | A | 5MB 大文档 | 成功落库；超限 150ms 快速拒绝 |
 | B | 6 进程并发 ×30 写（WAL + 重试） | 180/180 成功，数据一致 |
 | C | 远程 MySQL | 需数据库可达后运行 |
+
+## Docker 部署
+
+容器化部署（适合常驻服务器、供远程客户端通过 SSH 接入）：
+
+```bash
+cd docker
+# 准备：jar 放到 docker/ 目录；密码走环境变量
+export SINK_DB_PASSWORD=你的MySQL密码
+docker compose up -d --build
+docker logs -f km-data-sink-mcp     # 看到 "连接 mysql 执行记录表就绪" 即成功
+```
+
+- `docker/config.yaml` 指向 Docker 网络内的 `mysql` 容器，按实际环境改 host/库名
+- 日志持久化在 `docker/logs/`
+- 远程 MCP 客户端接入（SSH 通道）：
+
+```json
+{
+  "mcpServers": {
+    "km-data-sink-mcp-remote": {
+      "command": "ssh",
+      "args": [
+        "-o", "BatchMode=yes",
+        "用户@服务器IP", "-p", "22",
+        "docker exec -i km-data-sink-mcp java -jar /app/km-data-sink-mcp.jar --config /app/config.yaml"
+      ]
+    }
+  }
+}
+```
+
+> 前置：本机 SSH 公钥已加入服务器 `authorized_keys`（免密），客户端才不会卡在密码交互。
 
 ## 日志
 
